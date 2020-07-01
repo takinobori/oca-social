@@ -3,11 +3,14 @@
 
 import werkzeug
 from psycopg2 import OperationalError
-from odoo import api, http, registry, SUPERUSER_ID
+from odoo import api, http, registry, SUPERUSER_ID, _
+from odoo.addons.mail.controllers.main import MailController
+from odoo.http import request
 import logging
+import base64
 _logger = logging.getLogger(__name__)
 
-BLANK = b'R0lGODlhAQABAIAAANvf7wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=='
+BLANK = 'R0lGODlhAQABAIAAANvf7wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=='
 
 
 def _env_get(db, callback, tracking_id, event_type, **kw):
@@ -36,7 +39,7 @@ def _env_get(db, callback, tracking_id, event_type, **kw):
     return res
 
 
-class MailTrackingController(http.Controller):
+class MailTrackingController(MailController):
 
     def _request_metadata(self):
         request = http.request.httprequest
@@ -82,5 +85,24 @@ class MailTrackingController(http.Controller):
         # Always return GIF blank image
         response = werkzeug.wrappers.Response()
         response.mimetype = 'image/gif'
-        response.data = BLANK
+        response.data = base64.b64decode(BLANK)
         return response
+
+    @http.route()
+    def mail_client_action(self):
+        values = super().mail_client_action()
+        values['channel_slots']['channel_channel'].append({
+            'id': 'channel_failed',
+            'name': _("Failed"),
+            'uuid': None,
+            'state': 'open',
+            'is_minimized': False,
+            'channel_type': 'static',
+            'public': False,
+            'mass_mailing': None,
+            'group_based_subscription': None,
+        })
+        values.update({
+            'failed_counter': request.env['mail.message'].get_failed_count(),
+        })
+        return values
