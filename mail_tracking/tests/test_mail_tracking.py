@@ -4,9 +4,13 @@
 import mock
 from odoo.tools import mute_logger
 import time
+import base64
+import psycopg2
+import psycopg2.errorcodes
 from odoo import http
 from odoo.tests.common import TransactionCase
 from ..controllers.main import MailTrackingController, BLANK
+from lxml import etree
 
 mock_send_email = ('odoo.addons.base.models.ir_mail_server.'
                    'IrMailServer.send_email')
@@ -34,8 +38,9 @@ class TestMailTracking(TransactionCase):
         })
         self.last_request = http.request
         http.request = type('obj', (object,), {
-            'db': self.env.cr.dbname,
             'env': self.env,
+            'cr': self.env.cr,
+            'db': self.env.cr.dbname,
             'endpoint': type('obj', (object,), {
                 'routing': [],
             }),
@@ -99,10 +104,11 @@ class TestMailTracking(TransactionCase):
         status = message_dict['partner_trackings'][0]
         # Tracking status must be sent and
         # mail tracking must be the one search before
-        self.assertEqual(status[0], 'sent')
-        self.assertEqual(status[1], tracking_email.id)
-        self.assertEqual(status[2], self.recipient.display_name)
-        self.assertEqual(status[3], self.recipient.id)
+        self.assertEqual(status['status'], 'sent')
+        self.assertEqual(status['tracking_id'], tracking_email.id)
+        self.assertEqual(status['recipient'], self.recipient.display_name)
+        self.assertEqual(status['partner_id'], self.recipient.id)
+        self.assertEqual(status['isCc'], False)
         # And now open the email
         metadata = {
             'ip': '127.0.0.1',
@@ -112,6 +118,178 @@ class TestMailTracking(TransactionCase):
         }
         tracking_email.event_create('open', metadata)
         self.assertEqual(tracking_email.state, 'opened')
+
+    def test_message_post_partner_no_email(self):
+        # Create message with recipient without defined email
+        self.recipient.write({'email': False})
+        message = self.env['mail.message'].create({
+            'subject': 'Message test',
+            'author_id': self.sender.id,
+            'email_from': self.sender.email,
+            'message_type': 'comment',
+            'model': 'res.partner',
+            'res_id': self.recipient.id,
+            'partner_ids': [(4, self.recipient.id)],
+            'body': '<p>This is a test message</p>',
+        })
+        message._notify(message, {}, force_send=True)
+        # Search tracking created
+        tracking_email = self.env['mail.tracking.email'].search([
+            ('mail_message_id', '=', message.id),
+            ('partner_id', '=', self.recipient.id),
+        ])
+        # No email should generate a error state: no_recipient
+        self.assertEqual(tracking_email.state, 'error')
+        self.assertEqual(tracking_email.error_type, 'no_recipient')
+        self.assertFalse(self.recipient.email_bounced)
+
+    def _check_partner_trackings_cc(self, message):
+        message_dict = message.message_format()[0]
+        self.assertEqual(len(message_dict['partner_trackings']), 3)
+        # mail cc
+        foundPartner = False
+        foundNoPartner = False
+        for tracking in message_dict['partner_trackings']:
+            if tracking['partner_id'] == self.sender.id:
+                foundPartner = True
+                self.assertTrue(tracking['isCc'])
+            elif tracking['recipient'] == 'unnamed@test.com':
+                foundNoPartner = True
+                self.assertFalse(tracking['partner_id'])
+                self.assertTrue(tracking['isCc'])
+            elif tracking['partner_id'] == self.recipient.id:
+                self.assertFalse(tracking['isCc'])
+        self.assertTrue(foundPartner)
+        self.assertTrue(foundNoPartner)
+
+    def test_email_cc(self):
+        sender_user = self.env['res.users'].create({
+            'name': 'Sender User Test',
+            'partner_id': self.sender.id,
+            'login': 'sender-test',
+        })
+        # pylint: disable=C8107
+        message = self.recipient.sudo(user=sender_user).message_post(
+            body='<p>This is a test message</p>',
+            cc='Dominique Pinon <unnamed@test.com>, sender@example.com'
+        )
+        # suggested recipients
+        recipients = self.recipient.message_get_suggested_recipients()
+        suggested_mails = {
+            email[1] for email in recipients[self.recipient.id]
+        }
+        self.assertIn('unnamed@test.com', suggested_mails)
+        self.assertEqual(len(recipients[self.recipient.id]), 3)
+        # Repeated Cc recipients
+        message = self.env['mail.message'].create({
+            'subject': 'Message test',
+            'author_id': self.sender.id,
+            'email_from': self.sender.email,
+            'message_type': 'comment',
+            'model': 'res.partner',
+            'res_id': self.recipient.id,
+            'partner_ids': [(4, self.recipient.id)],
+            'email_cc': 'Dominique Pinon <unnamed@test.com>, sender@example.com'
+                        ', recipient@example.com',
+            'body': '<p>This is another test message</p>',
+        })
+        message._notify(message, {}, force_send=True)
+        recipients = self.recipient.message_get_suggested_recipients()
+        self.assertEqual(len(recipients[self.recipient.id]), 3)
+        self._check_partner_trackings_cc(message)
+
+    def _check_partner_trackings_to(self, message):
+        message_dict = message.message_format()[0]
+        self.assertEqual(len(message_dict['partner_trackings']), 4)
+        # mail cc
+        foundPartner = False
+        foundNoPartner = False
+        for tracking in message_dict['partner_trackings']:
+            if tracking['partner_id'] == self.sender.id:
+                foundPartner = True
+            elif tracking['recipient'] == 'support+unnamed@test.com':
+                foundNoPartner = True
+                self.assertFalse(tracking['partner_id'])
+        self.assertTrue(foundPartner)
+        self.assertTrue(foundNoPartner)
+
+    def test_email_to(self):
+        sender_user = self.env['res.users'].create({
+            'name': 'Sender User Test',
+            'partner_id': self.sender.id,
+            'login': 'sender-test',
+        })
+        # pylint: disable=C8107
+        message = self.recipient.sudo(user=sender_user).message_post(
+            body='<p>This is a test message</p>',
+            to='Dominique Pinon <support+unnamed@test.com>, sender@example.com'
+        )
+        # suggested recipients
+        recipients = self.recipient.message_get_suggested_recipients()
+        suggested_mails = {
+            email[1] for email in recipients[self.recipient.id]
+        }
+        self.assertIn('support+unnamed@test.com', suggested_mails)
+        self.assertEqual(len(recipients[self.recipient.id]), 3)
+        # Repeated To recipients
+        message = self.env['mail.message'].create({
+            'subject': 'Message test',
+            'author_id': self.sender.id,
+            'email_from': self.sender.email,
+            'message_type': 'comment',
+            'model': 'res.partner',
+            'res_id': self.recipient.id,
+            'partner_ids': [(4, self.recipient.id)],
+            'email_to': 'Dominique Pinon <support+unnamed@test.com>'
+                        ', sender@example.com, recipient@example.com'
+                        ', TheCatchall@test.com',
+            'body': '<p>This is another test message</p>',
+        })
+        message._notify(message, {}, force_send=True)
+        recipients = self.recipient.message_get_suggested_recipients()
+        self.assertEqual(len(recipients[self.recipient.id]), 4)
+        self._check_partner_trackings_to(message)
+        # Catchall + Alias
+        IrConfigParamObj = self.env["ir.config_parameter"].sudo()
+        IrConfigParamObj.set_param("mail.catchall.alias", "TheCatchall")
+        IrConfigParamObj.set_param('mail.catchall.domain', 'test.com')
+        self.env['mail.alias'].create({
+            'alias_model_id': self.env['ir.model']._get('res.partner').id,
+            'alias_name': 'support+unnamed',
+        })
+        recipients = self.recipient.message_get_suggested_recipients()
+        self.assertEqual(len(recipients[self.recipient.id]), 2)
+        suggested_mails = {
+            email[1] for email in recipients[self.recipient.id]
+        }
+        self.assertNotIn('unnamed@test.com', suggested_mails)
+
+    def test_failed_message(self):
+        MailMessageObj = self.env['mail.message']
+        # Create message
+        mail, tracking = self.mail_send(self.recipient.email)
+        self.assertFalse(tracking.mail_message_id.mail_tracking_needs_action)
+        # Force error state
+        tracking.state = 'error'
+        self.assertTrue(tracking.mail_message_id.mail_tracking_needs_action)
+        failed_count = MailMessageObj.get_failed_count()
+        self.assertTrue(failed_count > 0)
+        values = tracking.mail_message_id.get_failed_messages()
+        self.assertEqual(values[0]['id'], tracking.mail_message_id.id)
+        messages = MailMessageObj.search([])
+        messages_failed = MailMessageObj.search(
+            MailMessageObj._get_failed_message_domain())
+        self.assertTrue(messages)
+        self.assertTrue(messages_failed)
+        self.assertTrue(len(messages) > len(messages_failed))
+        tracking.mail_message_id.set_need_action_done()
+        self.assertFalse(tracking.mail_message_id.mail_tracking_needs_action)
+        self.assertTrue(
+            MailMessageObj.get_failed_count() < failed_count)
+        # No author_id
+        tracking.mail_message_id.author_id = False
+        values = tracking.mail_message_id.get_failed_messages()[0]
+        self.assertEqual(values['author'][0], -1)
 
     def mail_send(self, recipient):
         mail = self.env['mail.mail'].create({
@@ -130,19 +308,56 @@ class TestMailTracking(TransactionCase):
     def test_mail_send(self):
         controller = MailTrackingController()
         db = self.env.cr.dbname
-        image = BLANK
+        image = base64.b64decode(BLANK)
         mail, tracking = self.mail_send(self.recipient.email)
         self.assertEqual(mail.email_to, tracking.recipient)
         self.assertEqual(mail.email_from, tracking.sender)
-        res = controller.mail_tracking_open(db, tracking.id)
-        self.assertEqual(image, res.response[0])
-        # Two events: sent and open
-        self.assertEqual(2, len(tracking.tracking_event_ids))
-        # Fake event: tracking_email_id = False
-        res = controller.mail_tracking_open(db, False)
-        self.assertEqual(image, res.response[0])
-        # Two events again because no tracking_email_id found for False
-        self.assertEqual(2, len(tracking.tracking_event_ids))
+        with mock.patch('odoo.http.db_filter') as mock_client:
+            mock_client.return_value = True
+            res = controller.mail_tracking_open(
+                db, tracking.id, tracking.token)
+            self.assertEqual(image, res.response[0])
+            # Two events: sent and open
+            self.assertEqual(2, len(tracking.tracking_event_ids))
+            # Fake event: tracking_email_id = False
+            res = controller.mail_tracking_open(db, False, False)
+            self.assertEqual(image, res.response[0])
+            # Two events again because no tracking_email_id found for False
+            self.assertEqual(2, len(tracking.tracking_event_ids))
+
+    def test_mail_tracking_open(self):
+        controller = MailTrackingController()
+        db = self.env.cr.dbname
+        with mock.patch('odoo.http.db_filter') as mock_client:
+            mock_client.return_value = True
+            mail, tracking = self.mail_send(self.recipient.email)
+            # Tracking is in sent or delivered state. But no token give.
+            # Don't generates tracking event
+            controller.mail_tracking_open(db, tracking.id)
+            self.assertEqual(1, len(tracking.tracking_event_ids))
+            tracking.write({'state': 'opened'})
+            # Tracking isn't in sent or delivered state.
+            # Don't generates tracking event
+            controller.mail_tracking_open(db, tracking.id, tracking.token)
+            self.assertEqual(1, len(tracking.tracking_event_ids))
+            tracking.write({'state': 'sent'})
+            # Tracking is in sent or delivered state and a token is given.
+            # Generates tracking event
+            controller.mail_tracking_open(db, tracking.id, tracking.token)
+            self.assertEqual(2, len(tracking.tracking_event_ids))
+            # Generate new email due concurrent event filter
+            mail, tracking = self.mail_send(self.recipient.email)
+            tracking.write({'token': False})
+            # Tracking is in sent or delivered state but a token is given for a
+            # record that doesn't have a token.
+            # Don't generates tracking event
+            controller.mail_tracking_open(db, tracking.id, 'tokentest')
+            self.assertEqual(1, len(tracking.tracking_event_ids))
+            # Tracking is in sent or delivered state and not token is given for
+            # a record that doesn't have a token.
+            # Generates tracking event
+            controller.mail_tracking_open(db, tracking.id, False)
+            self.assertEqual(2, len(tracking.tracking_event_ids))
 
     def test_concurrent_open(self):
         mail, tracking = self.mail_send(self.recipient.email)
@@ -319,9 +534,29 @@ class TestMailTracking(TransactionCase):
     def test_db(self):
         db = self.env.cr.dbname
         controller = MailTrackingController()
-        not_found = controller.mail_tracking_all('not_found_db')
-        self.assertEqual(b'NOT FOUND', not_found.response[0])
-        none = controller.mail_tracking_all(db)
-        self.assertEqual(b'NONE', none.response[0])
-        none = controller.mail_tracking_event(db, 'open')
-        self.assertEqual(b'NONE', none.response[0])
+        with mock.patch('odoo.http.db_filter') as mock_client:
+            mock_client.return_value = True
+            with self.assertRaises(psycopg2.OperationalError):
+                controller.mail_tracking_event('not_found_db')
+            none = controller.mail_tracking_event(db)
+            self.assertEqual(b'NONE', none.response[0])
+            none = controller.mail_tracking_event(db, 'open')
+            self.assertEqual(b'NONE', none.response[0])
+
+
+class TestMailTrackingViews(TransactionCase):
+    def test_fields_view_get(self):
+        result = self.env['res.partner'].fields_view_get(
+            view_id=self.env.ref('base.view_partner_form').id,
+            view_type='form')
+        doc = etree.XML(result['arch'])
+        nodes = doc.xpath(
+            "//field[@name='failed_message_ids'"
+            " and @widget='mail_failed_message']")
+        self.assertTrue(nodes)
+        result = self.env['res.partner'].fields_view_get(
+            view_id=self.env.ref('base.view_res_partner_filter').id,
+            view_type='search')
+        doc = etree.XML(result['arch'])
+        nodes = doc.xpath("//filter[@name='failed_message_ids']")
+        self.assertTrue(nodes)

@@ -52,22 +52,31 @@ status icon will appear just right to name of notified partner.
 
 These are all available status icons:
 
-.. |sent| image:: mail_tracking/static/src/img/sent.png
+.. |sent| image:: https://raw.githubusercontent.com/OCA/social/12.0/mail_tracking/static/src/img/sent.png
    :width: 10px
 
-.. |delivered| image:: mail_tracking/static/src/img/delivered.png
+.. |delivered| image:: https://raw.githubusercontent.com/OCA/social/12.0/mail_tracking/static/src/img/delivered.png
    :width: 15px
 
-.. |opened| image:: mail_tracking/static/src/img/opened.png
+.. |opened| image:: https://raw.githubusercontent.com/OCA/social/12.0/mail_tracking/static/src/img/opened.png
    :width: 15px
 
-.. |error| image:: mail_tracking/static/src/img/error.png
+.. |error| image:: https://raw.githubusercontent.com/OCA/social/12.0/mail_tracking/static/src/img/error.png
    :width: 10px
 
-.. |waiting| image:: mail_tracking/static/src/img/waiting.png
+.. |waiting| image:: https://raw.githubusercontent.com/OCA/social/12.0/mail_tracking/static/src/img/waiting.png
    :width: 10px
 
-.. |unknown| image:: mail_tracking/static/src/img/unknown.png
+.. |unknown| image:: https://raw.githubusercontent.com/OCA/social/12.0/mail_tracking/static/src/img/unknown.png
+   :width: 10px
+
+.. |cc| image:: https://raw.githubusercontent.com/OCA/social/12.0/mail_tracking/static/src/img/cc.png
+   :width: 10px
+
+.. |noemail| image:: https://raw.githubusercontent.com/OCA/social/12.0/mail_tracking/static/src/img/no_email.png
+   :width: 10px
+
+.. |anonuser| image:: https://raw.githubusercontent.com/OCA/social/12.0/mail_tracking/static/src/img/anon_user.png
    :width: 10px
 
 |unknown|  **Unknown**: No email tracking info available. Maybe this notified partner has 'Receive Inbox Notifications by Email' == 'Never'
@@ -82,11 +91,41 @@ These are all available status icons:
 
 |opened|  **Opened**: Opened by partner
 
+|cc|  **Cc**: It's a Carbon-Copy recipient. Can't know the status so is 'Unknown'
+
+|noemail|  **No Email**: The partner doesn't have a defined email
+
+|anonuser|  **No Partner**: The recipient doesn't have a defined partner
+
+
 If you want to see all tracking emails and events you can go to
 
 * Settings > Technical > Email > Tracking emails
 * Settings > Technical > Email > Tracking events
 
+When the message generates an 'error' status, it will apear on discuss 'Failed'
+channel. Any view with chatter can show the failed messages
+too.
+
+* Discuss
+
+  .. image:: https://raw.githubusercontent.com/OCA/social/12.0/mail_tracking/static/img/failed_message_discuss.png
+
+* Chatter
+
+  .. image:: https://raw.githubusercontent.com/OCA/social/12.0/mail_tracking/static/img/failed_message_widget.png
+
+You can use "Failed sent messages" filter present in all views to show records
+with messages in failed status and that needs an user action.
+
+* Filter
+
+  .. image:: https://raw.githubusercontent.com/OCA/social/12.0/mail_tracking/static/img/failed_message_filter.png
+
+Known issues / Roadmap
+======================
+
+* Add pivot for tracking events and mail trackings
 
 Bug Tracker
 ===========
@@ -116,6 +155,7 @@ Contributors
   * David Vidal
   * Ernesto Tejeda
   * Rafael Blasco
+  * Alexandre Díaz
 
 Other credits
 ~~~~~~~~~~~~~
